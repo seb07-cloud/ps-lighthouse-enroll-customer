@@ -1,3 +1,5 @@
+#Requires -Modules Az
+
 [Parameter(Mandatory)]
 [string]$PathToTemplateFiles,
 [Parameter(Mandatory)]
@@ -5,57 +7,92 @@
 [Parameter(Mandatory)]
 [string]$CustomerSubscriptionName,
 [Parameter(Mandatory)]
-[string]$CustomerShortName
+[string]$CustomerShortName,
+[Parameter(Mandatory)]
+[string]$MSPSubscriptionName,
+[Parameter(Mandatory)]
+[string]$MSPSubscriptionId
+[Parameter(Mandatory)]
+[string]$location
 
+$ErrorActionPreference = 'Stop'
 
 #Where To Save the Template Files
 $PathToTemplateFiles = 'C:\Temp\'
 
-#Customer (to be managed) Subscription Info
-$CustomerSubscriptionId = "subscription id"
-$CustomerSubscriptionName = "subscription name"
-
-#Managed Service Provider (MSP) Subscription Info 
-$SubscriptionName = "subscription name"
-$Location = "australiasoutheast"
-
-$AdminGroup = "Customer1Admins" #Azure AD admin group in the Managed Service Provider(MSP) tenant
+$AdminGroup = "gr_$(CustomerShortName)-Lighthouse-Admins" #Azure AD admin group in the Managed Service Provider(MSP) tenant
 $AdminGroupMember = Get-AzureADUser -SearchString "User Display Name" #That will manage customer resources
 $MSPOfferName = "$(CustomerShortName) Lighthouse MSP Access" #The name that appears in the customers lighthouse portal, must be unique
 
+$roles = @(
+    'Security Admin'
+    'Reader'
+    'User Access Administrator'
+    'Contributor'
+    'Log Analytics Contributor'
+)
 
-#Log into the MSP Subscription with Connect-AzAccount since we're not using Cloud Shell
-Import-Module Az -Verbose
+function Connect-Az {
+    [CmdletBinding()]
+    param (
+        [string]$MSPSubscriptionId,
+        [string]$MSPSubscriptionName
 
-Clear-AzContext
-Connect-AzAccount
-$AZSubscription = Get-AzSubscription -SubscriptionName $SubscriptionName
+    )
+    
+    begin {
+        Import-Module Az -Verbose
 
-#Confirm the MSP subscription is selected before continuing
-Get-AzContext
+        Get-AzContext | if (!($_.Subscription -eq $MSPSubscriptionId)) {
+            Clear-AzContext
+            Connect-AzAccount -Subscription $MSPSubscriptionId
+            Get-AzSubscription -SubscriptionName $MSPSubscriptionName | Set-AzContext -Force -Verbose
+        }
+    }
+    process {
+        Connect-AzureAD -TenantId $AzSubscription.TenantId
+        Register-AzResourceProvider -ProviderNamespace Microsoft.ManagedServices
+    }
+    end {}
+}
 
-#Connect to the MSP Subscription Azure AD Tenant
-Get-AzSubscription -SubscriptionName $SubscriptionName | Set-AzContext -Force -Verbose
-Connect-AzureAD -TenantId $AzSubscription.TenantId
+function Get-RoleIds {
+    [CmdletBinding()]
+    param (
+        [array]$RoleNames
+    )
+    begin {
+        $export = @()
 
-#Register the Microsoft.ManagedServices Provider 
-Register-AzResourceProvider -ProviderNamespace Microsoft.ManagedServices
+        if (!(Get-AzContext)) {
+            throw "Not Connected"
+        }
+    }
+    process {
+        $Roles = foreach ($RoleName in $RoleNames) {
+            (Get-AzRoleDefinition -Name $RoleName)
+        }
 
+        foreach ($role in $Roles) {
+            $export += [PSCustomObject]@{
+                Name = $($role.Name -replace '\s', '')
+                Id   = $role.Id
+            }
+        }
+    }
 
-<#
-Retrieve role definition IDs that will be assigned in the customer environment
-* Edit the list as required
-* Can only use built in roles
-* The roles “Owner” and “User Access Administrator” cannot be used 
-* (Except in the last line of the JSON template where they're used to allow the MSP to grant limited access to Service Principals in the Customer tenant)
-* Ref https://docs.microsoft.com/en-us/azure/lighthouse/how-to/onboard-customer
-#>
-$SecurityAdminRole = (Get-AzRoleDefinition -Name 'Security Admin')
-$ReaderRole = (Get-AzRoleDefinition -Name 'Reader')
-$UserAccessAdminRole = (Get-AzRoleDefinition -Name 'User Access Administrator')
-$ContributorRole = (Get-AzRoleDefinition -Name 'Contributor')
-$LogAnalyticsContributorRole = (Get-AzRoleDefinition -Name 'Log Analytics Contributor')
-$AzSubscriptionId = $AzSubscription.id
+    end {
+        Write-Output $export
+    }
+}
+
+$roleIds = Get-RoleIds -RoleNames $roles
+
+$SecurityAdminRole = $roleids | Where-Object { $_.Name -like "SecurityAdmin" }
+$Reader = $roleids | Where-Object { $_.Name -like "Reader" }
+$UserAccessAdministrator = $roleids | Where-Object { $_.Name -like "UserAccessAdministrator" }
+$Contributor = $roleids | Where-Object { $_.Name -like "Contributor" }
+$LogAnalyticsContributor = $roleids | Where-Object { $_.Name -like "LogAnalyticsContributor" }
 
 
 <#
@@ -96,11 +133,11 @@ In this demo principalId refers to the Customer1Admins Group
         -replace '<insert managing tenant id>', $AzSubscription.TenantId `
         -replace '00000000-0000-0000-0000-000000000000', $AdminGroupId `
         -replace 'PIM_Group', $AdminGroup `
-        -replace 'acdd72a7-3385-48ef-bd42-f606fba81ae7', $SecurityAdminRole.id `
-        -replace '91c1777a-f3dc-4fae-b103-61d183457e46', $ReaderRole.id `
-        -replace '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9', $UserAccessAdminRole.id `
-        -replace 'b24988ac-6180-42a0-ab88-20f7382dd24c', $ContributorRole.id `
-        -replace '92aaf0da-9dab-42b6-94a3-d43ce8d16293', $LogAnalyticsContributorRole.id
+        -replace 'acdd72a7-3385-48ef-bd42-f606fba81ae7', $SecurityAdminRole `
+        -replace '91c1777a-f3dc-4fae-b103-61d183457e46', $ReaderRole `
+        -replace '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9', $UserAccessAdminRole `
+        -replace 'b24988ac-6180-42a0-ab88-20f7382dd24c', $ContributorRole `
+        -replace '92aaf0da-9dab-42b6-94a3-d43ce8d16293', $LogAnalyticsContributorRole
 } | Set-Content -Path $PathToTemplateFiles\lighthouse\subscription.parameters.json
 
 
@@ -133,3 +170,10 @@ Get-AzManagedServicesAssignment | Format-List
 
 #In about 15 minutes the MSP should be visible in the Customer Subscription
 Start-Process "https://portal.azure.com/#blade/Microsoft_Azure_CustomerHub/ServiceProvidersBladeV2/providers"
+
+
+
+
+
+
+
