@@ -35,9 +35,10 @@ $roles = @(
 function Connect-Az {
     [CmdletBinding()]
     param (
+        [Parameter(Mandatory)]
         [string]$MSPSubscriptionId,
+        [Parameter(Mandatory)]
         [string]$MSPSubscriptionName
-
     )
     
     begin {
@@ -59,6 +60,7 @@ function Connect-Az {
 function Get-RoleIds {
     [CmdletBinding()]
     param (
+        [Parameter(Mandatory)]
         [array]$RoleNames
     )
     begin {
@@ -170,10 +172,3 @@ Get-AzManagedServicesAssignment | Format-List
 
 #In about 15 minutes the MSP should be visible in the Customer Subscription
 Start-Process "https://portal.azure.com/#blade/Microsoft_Azure_CustomerHub/ServiceProvidersBladeV2/providers"
-
-
-
-
-
-
-
